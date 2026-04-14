@@ -1,0 +1,22 @@
+{
+  "session_id": "d917aa7f-cf08-4784-9121-309cbe25f9e1",
+  "symbol": "test_data",
+  "timeframe": "1D",
+  "bar_range": [
+    "2022-01-03 00:00:00",
+    "2023-12-01 00:00:00"
+  ],
+  "data_checksum": "501b3b976ce9185d894e86147797ba4db86bb29d5fa7701e3f0825d47189cb8d",
+  "indicator_config": {
+    "bb_period": 20,
+    "sma_period": 20,
+    "rsi_period": 14,
+    "atr_period": 14
+  },
+  "anonymization_config": null,
+  "created_at": "2026-04-14T22:18:07.566206",
+  "config_hash": "92df58a26f5fd9c9ba452d81ea6c94c872ff7542c016e326427d13133f10eabf",
+  "trade_count": 0,
+  "final_equity": 0.0,
+  "status": "active"
+}
