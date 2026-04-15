@@ -296,15 +296,15 @@ class FillEngine:
             pos.quantity, self._commission, pos.slippage_pnl_cost,
         )
         return Trade(
+            entry_price    = pos.entry_price,
+            side           = pos.side,
+            quantity       = pos.quantity,
             session_id     = pos.session_id,
             symbol         = self._symbol,
             timeframe      = self._timeframe,
             entry_datetime = pos.entry_datetime,
-            entry_price    = pos.entry_price,
             exit_datetime  = exit_dt,
             exit_price     = exit_price,
-            quantity       = pos.quantity,
-            side           = pos.side,
             stop_price     = pos.stop_price,
             target_price   = pos.target_price,
             exit_reason    = exit_reason,
@@ -317,4 +317,48 @@ class FillEngine:
             ambiguity_flag = ambiguity_flag,
             notes          = None,
             config_hash    = self._config_hash,
+            status         = "closed",
         )
+
+
+# ── Standalone flatten helper ─────────────────────────────────────────────────
+
+def flatten_position(
+    trade:       "Trade",
+    current_bar: pd.Series,
+    commission:  float = 0.0,
+) -> "Trade":
+    """Close *trade* immediately at *current_bar*'s close price.
+
+    Mutates and returns *trade* with all exit fields populated:
+    ``exit_price``, ``exit_datetime``, ``exit_reason``, ``ambiguity_flag``,
+    ``execution_rule``, ``pnl_currency``, ``pnl_r``, ``commission``, and
+    ``status``.
+
+    This is a pure transformation function; it does **not** interact with
+    any ``FillEngine`` or database.  The real flatten flow in
+    :class:`~backtester.ui.main_window.MainWindow` uses
+    :meth:`FillEngine.close_all` which handles position bookkeeping.
+    """
+    exit_price = snap_to_tick(float(current_bar["close"]), trade.tick_size)
+
+    # Accept bars where datetime is stored either as the Series index (bar.name)
+    # or as an explicit key (as in test fixtures).
+    dt_raw = current_bar.get("datetime", None) if hasattr(current_bar, "get") else None
+    trade.exit_datetime  = str(dt_raw if dt_raw is not None else current_bar.name)
+
+    trade.exit_price     = exit_price
+    trade.exit_reason    = "manual"
+    trade.ambiguity_flag = 0
+    trade.execution_rule = "manual"
+    trade.commission    += commission
+    trade.pnl_currency   = compute_pnl_currency(
+        trade.entry_price, exit_price, trade.side,
+        trade.quantity, trade.commission, trade.slippage,
+    )
+    trade.pnl_r = compute_pnl_r(
+        trade.entry_price, exit_price, trade.stop_price, trade.side,
+        trade.quantity, trade.commission, trade.slippage,
+    )
+    trade.status = "closed"
+    return trade

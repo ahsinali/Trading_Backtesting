@@ -224,6 +224,7 @@ class ChartWidget(pg.GraphicsLayoutWidget):
         self._x_labels_visible   = True
         self._y_labels_visible   = True
         self._auto_scroll        = False   # enabled after initial fit_to_visible()
+        self.user_has_panned:    bool = False
 
         # Anonymization state
         self._anonymizer:    Anonymizer | None = None
@@ -333,6 +334,12 @@ class ChartWidget(pg.GraphicsLayoutWidget):
             antialias=False,
         )
 
+        # Set user_has_panned when the user manually zooms/pans.
+        # sigRangeChangedManually is NOT emitted by programmatic setXRange/setYRange.
+        self._plot.getViewBox().sigRangeChangedManually.connect(
+            lambda: setattr(self, "user_has_panned", True)
+        )
+
         # ── Initial render ────────────────────────────────────────────
         self.render_visible()       # _auto_scroll is still False here
         self.fit_to_visible()
@@ -422,9 +429,10 @@ class ChartWidget(pg.GraphicsLayoutWidget):
         else:
             self._rsi_plot.setVisible(False)
 
-        # Auto-scroll: keep latest bar visible at the right edge
+        # Auto-refit: keep all visible bars in view on every advance
         if self._auto_scroll:
-            self._maybe_scroll_to_latest()
+            self._fit_y_axis()
+            self._fit_x_axis()
 
     def set_indicator_data(
         self,
@@ -472,6 +480,7 @@ class ChartWidget(pg.GraphicsLayoutWidget):
 
     def fit_to_visible(self) -> None:
         """Fit both axes exactly to all currently visible bars."""
+        self.user_has_panned = False
         bars = self._cursor.visible_bars
         if bars.empty:
             return
@@ -487,40 +496,58 @@ class ChartWidget(pg.GraphicsLayoutWidget):
         vb.setXRange(-0.5, n - 0.5 + max(1.0, n * 0.05), padding=0)
         vb.setYRange(y_lo - y_m, y_hi + y_m, padding=0)
 
-    def _maybe_scroll_to_latest(self) -> None:
-        """Pan right when the latest bar reaches the right viewport edge.
+    def _fit_y_axis(self) -> None:
+        """Refit the Y axis to the currently visible bars.
 
-        Keeps the latest bar at ≈85% of the view width so there is always a
-        small right margin, matching TradingView's replay-mode behaviour.
-        Also re-fits the y-axis to the bars now in view.
+        Skips the refit if the user has manually panned/zoomed AND the
+        latest bar's high/low are still within the current Y view.
         """
         vb = self._plot.getViewBox()
-        x_left, x_right = vb.viewRange()[0]
-        view_w  = x_right - x_left
-        cur_x   = float(self._cursor.current_index)
+        if self.user_has_panned:
+            x_range, y_range = vb.viewRange()
+            idx  = self._cursor.current_index
+            bar  = self._cursor.visible_bars.iloc[-1]
+            last_hi = self._to_display_price(float(bar["high"]))
+            last_lo = self._to_display_price(float(bar["low"]))
+            x_out = idx > x_range[1] or idx < x_range[0]
+            y_out = last_hi > y_range[1] or last_lo < y_range[0]
+            if x_out or y_out:
+                self.user_has_panned = False   # bar is out of view — force refit
+            else:
+                return   # bar still visible — preserve user zoom
 
-        # Do nothing if the latest bar is still comfortably inside the view
-        if cur_x <= x_right - 0.5:
+        visible = self._cursor.visible_bars
+        if visible.empty:
             return
+        y_lo = self._to_display_price(float(visible["low"].min()))
+        y_hi = self._to_display_price(float(visible["high"].max()))
+        if y_lo > y_hi:
+            y_lo, y_hi = y_hi, y_lo
+        padding = max((y_hi - y_lo) * 0.05, 0.01)
+        vb.setYRange(y_lo - padding, y_hi + padding, padding=0)
 
-        # New x range: latest bar at 85 % from left, 15 % right margin
-        new_right = cur_x + max(1.0, view_w * 0.15)
-        new_left  = new_right - view_w
+    def _fit_x_axis(self) -> None:
+        """Refit the X axis to show all visible bars with a small right margin.
 
-        vb.setXRange(new_left, new_right, padding=0)
+        Skips the refit if the user has manually panned/zoomed AND the
+        latest bar is still within the current X view.
+        """
+        vb = self._plot.getViewBox()
+        if self.user_has_panned:
+            x_range, y_range = vb.viewRange()
+            idx  = self._cursor.current_index
+            bar  = self._cursor.visible_bars.iloc[-1]
+            last_hi = self._to_display_price(float(bar["high"]))
+            last_lo = self._to_display_price(float(bar["low"]))
+            x_out = idx > x_range[1] or idx < x_range[0]
+            y_out = last_hi > y_range[1] or last_lo < y_range[0]
+            if x_out or y_out:
+                self.user_has_panned = False   # bar is out of view — force refit
+            else:
+                return   # bar still visible — preserve user zoom
 
-        # Re-fit y to the bars visible in the new x window (in display space)
-        bars  = self._cursor.visible_bars
-        i_lo  = max(0, int(np.ceil(new_left)))
-        i_hi  = min(len(bars) - 1, int(np.floor(new_right)))
-        if i_lo <= i_hi:
-            sl   = bars.iloc[i_lo : i_hi + 1]
-            y_lo = self._to_display_price(float(sl["low"].min()))
-            y_hi = self._to_display_price(float(sl["high"].max()))
-            if y_lo > y_hi:
-                y_lo, y_hi = y_hi, y_lo
-            y_m  = max((y_hi - y_lo) * 0.02, 0.01)
-            vb.setYRange(y_lo - y_m, y_hi + y_m, padding=0)
+        n = self._cursor.current_index + 1
+        vb.setXRange(-0.5, n + max(2, n * 0.05), padding=0)
 
     def toggle_anonymization(self, anonymizer: Anonymizer | None = None) -> None:
         """Enable or disable anonymization of price and date data.

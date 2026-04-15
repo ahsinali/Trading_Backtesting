@@ -24,38 +24,6 @@ _HDR_BG  = "#131722"
 
 _DIM_CSS = f"color: {_DIM}; font-size: 11px; background: transparent;"
 
-_SIDE_BTN = """
-    QPushButton {{
-        color: {fg};
-        background: {bg};
-        border: 1px solid {border};
-        font-size: 12px;
-        font-weight: 600;
-        padding: 3px 14px;
-        border-radius: 3px;
-    }}
-    QPushButton:checked {{
-        background: {active_bg};
-        color: {active_fg};
-        border-color: {active_bg};
-    }}
-"""
-
-_PLACE_BTN = f"""
-    QPushButton {{
-        color: #ffffff;
-        background: #2962ff;
-        border: none;
-        font-size: 12px;
-        font-weight: 600;
-        padding: 4px 16px;
-        border-radius: 3px;
-    }}
-    QPushButton:hover   {{ background: #3d6fff; }}
-    QPushButton:pressed {{ background: #1a4fcc; }}
-    QPushButton:disabled {{ background: {_DIM}; }}
-"""
-
 _COMBO_CSS = f"""
     QComboBox {{
         color: {_FG};
@@ -126,6 +94,70 @@ _TABLE_CSS = f"""
     }}
 """
 
+_LONG_BTN = """
+    QPushButton {
+        background: #26a69a;
+        color: #ffffff;
+        font-weight: bold;
+        font-size: 9px;
+        border: none;
+        border-radius: 0px;
+        min-height: 36px;
+    }
+    QPushButton:hover   { background: #00796b; }
+    QPushButton:pressed { background: #004d40; }
+    QPushButton:disabled {
+        background: #26a69a;
+        color: #ffffff;
+        opacity: 0.4;
+    }
+"""
+
+_SHORT_BTN = """
+    QPushButton {
+        background: #ef5350;
+        color: #ffffff;
+        font-weight: bold;
+        font-size: 9px;
+        border: none;
+        border-radius: 0px;
+        min-height: 36px;
+    }
+    QPushButton:hover   { background: #c62828; }
+    QPushButton:pressed { background: #b71c1c; }
+    QPushButton:disabled {
+        background: #ef5350;
+        color: #ffffff;
+        opacity: 0.4;
+    }
+"""
+
+_FLATTEN_BTN_ENABLED = """
+    QPushButton {
+        background: #334155;
+        color: #94a3b8;
+        font-weight: bold;
+        font-size: 11px;
+        border: none;
+        border-radius: 0px;
+        min-height: 36px;
+    }
+    QPushButton:hover   { background: #475569; color: #e2e8f0; }
+    QPushButton:pressed { background: #1e293b; }
+"""
+
+_FLATTEN_BTN_DISABLED = """
+    QPushButton {
+        background: #1e2530;
+        color: #3d4a5c;
+        font-weight: bold;
+        font-size: 11px;
+        border: none;
+        border-radius: 0px;
+        min-height: 36px;
+    }
+"""
+
 # Column definitions: (header, min-width)
 _COLS = [
     ("#",       28),
@@ -152,13 +184,16 @@ class OrderPanel(QtWidgets.QWidget):
     Signals
     -------
     order_placed(Order)
-        Emitted when the user clicks "Place Order".
+        Emitted when the user clicks Long or Short.
     policy_changed(str)
         Emitted when the ambiguity policy combo changes (lowercase name).
+    flatten_requested()
+        Emitted when the user clicks the Flatten button.
     """
 
-    order_placed:   Signal = Signal(object)
-    policy_changed: Signal = Signal(str)   # emits lowercase policy name
+    order_placed:      Signal = Signal(object)
+    policy_changed:    Signal = Signal(str)   # emits lowercase policy name
+    flatten_requested: Signal = Signal()
 
     def __init__(
         self,
@@ -190,8 +225,17 @@ class OrderPanel(QtWidgets.QWidget):
         # ── Separator ─────────────────────────────────────────────────
         sep = QtWidgets.QFrame()
         sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: #252932;")
+        sep.setStyleSheet("color: #252932;")
         vbox.addWidget(sep)
+
+        # ── Action bar (Long / Short / Flatten) ───────────────────────
+        vbox.addWidget(self._build_action_bar())
+
+        # ── Separator ─────────────────────────────────────────────────
+        sep2 = QtWidgets.QFrame()
+        sep2.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        sep2.setStyleSheet("color: #252932;")
+        vbox.addWidget(sep2)
 
         # ── Trade log table ───────────────────────────────────────────
         self._table = self._build_table()
@@ -200,10 +244,6 @@ class OrderPanel(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Public
     # ------------------------------------------------------------------
-
-    @property
-    def side(self) -> str:
-        return "long" if self._btn_long.isChecked() else "short"
 
     @property
     def policy(self) -> str:
@@ -219,19 +259,36 @@ class OrderPanel(QtWidgets.QWidget):
         self._trade_store = store
 
     def update_price_defaults(self, close: float, atr: float) -> None:
-        """Called by MainWindow after each bar advance to keep price inputs current.
-
-        Only repopulates the price spin when the user switches to Limit/Stop type.
-        Does NOT overwrite in-progress edits.
-        """
+        """Called by MainWindow after each bar advance to keep price inputs current."""
         self._last_close = close
         self._last_atr   = atr
 
-    def refresh_trade_log(self) -> None:
-        """Query the store for the current session and repopulate the table.
+    def update_button_states(self, has_pending: bool, has_open_trade: bool) -> None:
+        """Reflect the current position state in the action button bar.
 
-        Safe to call when ``_trade_store`` is ``None`` (table stays empty).
+        Parameters
+        ----------
+        has_pending:
+            ``True`` when there is at least one unfilled entry order.
+        has_open_trade:
+            ``True`` when FillEngine has at least one open position.
         """
+        can_enter = not has_pending and not has_open_trade
+        self._btn_long.setEnabled(can_enter)
+        self._btn_short.setEnabled(can_enter)
+
+        flatten_on = has_open_trade and not has_pending
+        self._btn_flatten.setEnabled(flatten_on)
+        self._btn_flatten.setStyleSheet(
+            _FLATTEN_BTN_ENABLED if flatten_on else _FLATTEN_BTN_DISABLED
+        )
+
+        self.pending_label.setVisible(has_pending)
+        if not has_pending:
+            self.pending_label.setText("")
+
+    def refresh_trade_log(self) -> None:
+        """Query the store for the current session and repopulate the table."""
         self._table.setRowCount(0)
         if self._trade_store is None:
             return
@@ -240,8 +297,7 @@ class OrderPanel(QtWidgets.QWidget):
         self._table.setRowCount(len(trades))
 
         for row_idx, t in enumerate(trades):
-            # Colour entire row by outcome
-            pnl  = t.pnl_currency
+            pnl    = t.pnl_currency
             colour = QtGui.QColor(_GREEN if pnl >= 0 else _RED)
 
             def _cell(text: str, align=QtCore.Qt.AlignmentFlag.AlignRight) -> QtWidgets.QTableWidgetItem:
@@ -251,7 +307,6 @@ class OrderPanel(QtWidgets.QWidget):
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
                 return item
 
-            # Row number (1-based)
             num_item = QtWidgets.QTableWidgetItem(str(row_idx + 1))
             num_item.setTextAlignment(
                 QtCore.Qt.AlignmentFlag.AlignCenter | QtCore.Qt.AlignmentFlag.AlignVCenter
@@ -285,7 +340,6 @@ class OrderPanel(QtWidgets.QWidget):
             r_text = f"{t.pnl_r:+.2f}R" if t.pnl_r is not None else "—"
             self._table.setItem(row_idx, 8, _cell(r_text))
 
-        # Scroll to latest trade
         if trades:
             self._table.scrollToBottom()
 
@@ -301,17 +355,6 @@ class OrderPanel(QtWidgets.QWidget):
         row = QtWidgets.QHBoxLayout(row_widget)
         row.setContentsMargins(8, 0, 8, 0)
         row.setSpacing(8)
-
-        # Side toggle
-        self._btn_long  = self._make_side_btn("Long",  _GREEN)
-        self._btn_short = self._make_side_btn("Short", _RED)
-        self._btn_long.setChecked(True)
-        self._btn_long.clicked.connect(self._select_long)
-        self._btn_short.clicked.connect(self._select_short)
-        row.addWidget(self._btn_long)
-        row.addWidget(self._btn_short)
-
-        row.addWidget(_dim_label("│", row_widget))
 
         # Order type
         row.addWidget(_dim_label("Type:", row_widget))
@@ -398,14 +441,85 @@ class OrderPanel(QtWidgets.QWidget):
         row.addWidget(self._combo_policy)
 
         row.addStretch()
-
-        # Place Order
-        self._btn_place = QtWidgets.QPushButton("Place Order")
-        self._btn_place.setStyleSheet(_PLACE_BTN)
-        self._btn_place.clicked.connect(self._place_order)
-        row.addWidget(self._btn_place)
-
         return row_widget
+
+    def _build_action_bar(self) -> QtWidgets.QWidget:
+        """Build the pending indicator label + Short / Qty / Long / Flatten bar."""
+        container = QtWidgets.QWidget()
+        container.setStyleSheet(f"background: {_BG};")
+
+        vbox = QtWidgets.QVBoxLayout(container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
+
+        # ── Pending indicator label ────────────────────────────────────
+        self.pending_label = QtWidgets.QLabel("")
+        self.pending_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.pending_label.setFixedHeight(20)
+        self.pending_label.setStyleSheet("font-size: 10px; font-weight: bold;")
+        self.pending_label.setVisible(False)
+        vbox.addWidget(self.pending_label)
+
+        # ── Button bar ────────────────────────────────────────────────
+        btn_row = QtWidgets.QWidget()
+        btn_row.setStyleSheet(f"background: {_BG};")
+        hbox = QtWidgets.QHBoxLayout(btn_row)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(0)
+
+        # Short button
+        self._btn_short = QtWidgets.QPushButton("Short")
+        self._btn_short.setStyleSheet(_SHORT_BTN)
+        self._btn_short.setFixedWidth(60)
+        self._btn_short.setFixedHeight(36)
+        self._btn_short.clicked.connect(self._on_short_clicked)
+        hbox.addWidget(self._btn_short)
+
+        # Qty display
+        self._lbl_qty_display = QtWidgets.QLabel("1.00")
+        self._lbl_qty_display.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._lbl_qty_display.setFixedWidth(48)
+        self._lbl_qty_display.setFixedHeight(36)
+        self._lbl_qty_display.setStyleSheet(
+            "background: #1e2530;"
+            "color: #94a3b8;"
+            "border-left: 1px solid rgba(255,255,255,0.08);"
+            "border-right: 1px solid rgba(255,255,255,0.08);"
+            "font-size: 11px;"
+        )
+        hbox.addWidget(self._lbl_qty_display)
+
+        # Long button
+        self._btn_long = QtWidgets.QPushButton("Long")
+        self._btn_long.setStyleSheet(_LONG_BTN)
+        self._btn_long.setFixedWidth(60)
+        self._btn_long.setFixedHeight(36)
+        self._btn_long.clicked.connect(self._on_long_clicked)
+        hbox.addWidget(self._btn_long)
+
+        # Small gap before Flatten
+        hbox.addSpacing(4)
+
+        # Flatten button
+        self._btn_flatten = QtWidgets.QPushButton("Flatten")
+        self._btn_flatten.setStyleSheet(_FLATTEN_BTN_DISABLED)
+        self._btn_flatten.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self._btn_flatten.setFixedHeight(36)
+        self._btn_flatten.setEnabled(False)
+        self._btn_flatten.clicked.connect(self._on_flatten_clicked)
+        hbox.addWidget(self._btn_flatten)
+
+        vbox.addWidget(btn_row)
+
+        # Keep qty display in sync with spinbox
+        self._spin_qty.valueChanged.connect(
+            lambda v: self._lbl_qty_display.setText(f"{v:.2f}")
+        )
+
+        return container
 
     def _build_table(self) -> QtWidgets.QTableWidget:
         headers = [c[0] for c in _COLS]
@@ -426,7 +540,6 @@ class OrderPanel(QtWidgets.QWidget):
         hdr = table.horizontalHeader()
         for col, (_, min_w) in enumerate(_COLS):
             table.setColumnWidth(col, min_w)
-        # Let last two columns stretch
         hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(8, QtWidgets.QHeaderView.ResizeMode.Stretch)
@@ -437,49 +550,70 @@ class OrderPanel(QtWidgets.QWidget):
     # Slots
     # ------------------------------------------------------------------
 
-    def _select_long(self) -> None:
-        self._btn_long.setChecked(True)
-        self._btn_short.setChecked(False)
-        if self._combo_type.currentText() == "Stop":
-            self._repopulate_price_spin()
-
-    def _select_short(self) -> None:
-        self._btn_short.setChecked(True)
-        self._btn_long.setChecked(False)
-        if self._combo_type.currentText() == "Stop":
-            self._repopulate_price_spin()
-
     def _on_type_changed(self, text: str) -> None:
         is_price = text in ("Limit", "Stop")
         self._sep_price.setVisible(is_price)
         self._lbl_price.setVisible(is_price)
         self._spin_price.setVisible(is_price)
         if is_price:
-            if text == "Limit":
-                self._lbl_price.setText("Limit Price:")
-            else:
-                self._lbl_price.setText("Stop Price:")
+            self._lbl_price.setText("Limit Price:" if text == "Limit" else "Stop Price:")
             self._repopulate_price_spin()
 
     def _on_policy_changed(self, text: str) -> None:
         self.policy_changed.emit(text.lower())
 
-    def _repopulate_price_spin(self) -> None:
-        """Set the price spin to a sensible default for the current type/side."""
-        order_type = self._combo_type.currentText()
-        if order_type == "Limit":
-            self._spin_price.setValue(self._last_close)
-        elif order_type == "Stop":
-            offset = self._last_atr if self._last_atr > 0 else self._last_close * 0.01
-            if self.side == "long":
-                self._spin_price.setValue(self._last_close + offset)
-            else:
-                self._spin_price.setValue(max(self._last_close - offset, 0.0))
+    def _on_long_clicked(self) -> None:
+        if not self._btn_long.isEnabled():
+            QtWidgets.QMessageBox.warning(
+                self, "Order Pending",
+                "An order is already pending. Cancel it before placing a new one."
+            )
+            return
+        order = self._build_order("long")
+        self._show_pending_indicator("long")
+        self.lock_policy()
+        self.order_placed.emit(order)
 
-    def _place_order(self) -> None:
+    def _on_short_clicked(self) -> None:
+        if not self._btn_short.isEnabled():
+            QtWidgets.QMessageBox.warning(
+                self, "Order Pending",
+                "An order is already pending. Cancel it before placing a new one."
+            )
+            return
+        order = self._build_order("short")
+        self._show_pending_indicator("short")
+        self.lock_policy()
+        self.order_placed.emit(order)
+
+    def _on_flatten_clicked(self) -> None:
+        self.flatten_requested.emit()
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _show_pending_indicator(self, side: str) -> None:
+        if side == "long":
+            text   = "⏳ LONG PENDING — waiting for fill"
+            colour = "#26a69a"
+        else:
+            text   = "⏳ SHORT PENDING — waiting for fill"
+            colour = "#ef5350"
+        self.pending_label.setText(text)
+        self.pending_label.setStyleSheet(
+            f"font-size: 10px; font-weight: bold; color: {colour};"
+        )
+        self.pending_label.setVisible(True)
+
+    def _repopulate_price_spin(self) -> None:
+        """Set the price spin to a sensible default for the current type."""
+        self._spin_price.setValue(self._last_close)
+
+    def _build_order(self, side: str) -> Order:
+        """Package current UI values into an :class:`~backtester.sim.orders.Order`."""
         bar        = self._cursor.visible_bars.iloc[-1]
         qty        = self._spin_qty.value()
-        side       = self.side
         raw_stop   = self._spin_stop.value()
         raw_target = self._spin_target.value()
         order_type = self._combo_type.currentText().lower()
@@ -487,7 +621,7 @@ class OrderPanel(QtWidgets.QWidget):
         if order_type == "market":
             ref_price = snap_to_tick(float(bar["close"]), self._tick_size)
             stop, target = self._compute_bracket(ref_price, side, raw_stop, raw_target)
-            order = Order.market(
+            return Order.market(
                 session_id       = self._session_id,
                 side             = side,
                 quantity         = qty,
@@ -500,7 +634,7 @@ class OrderPanel(QtWidgets.QWidget):
         elif order_type == "limit":
             ref_price = snap_to_tick(self._spin_price.value(), self._tick_size)
             stop, target = self._compute_bracket(ref_price, side, raw_stop, raw_target)
-            order = Order.limit(
+            return Order.limit(
                 session_id       = self._session_id,
                 side             = side,
                 quantity         = qty,
@@ -516,7 +650,7 @@ class OrderPanel(QtWidgets.QWidget):
             bracket_stop, bracket_target = self._compute_bracket(
                 ref_price, side, raw_stop, raw_target
             )
-            order = Order.stop_entry(
+            return Order.stop_entry(
                 session_id       = self._session_id,
                 side             = side,
                 quantity         = qty,
@@ -526,13 +660,6 @@ class OrderPanel(QtWidgets.QWidget):
                 bracket_stop     = bracket_stop,
                 bracket_target   = bracket_target,
             )
-
-        self.lock_policy()
-        self.order_placed.emit(order)
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
 
     def _compute_bracket(
         self,
@@ -549,18 +676,3 @@ class OrderPanel(QtWidgets.QWidget):
             stop   = snap_to_tick(ref_price + raw_stop,   self._tick_size) if raw_stop   > 0 else None
             target = snap_to_tick(ref_price - raw_target, self._tick_size) if raw_target > 0 else None
         return stop, target
-
-    def _make_side_btn(self, label: str, active_colour: str) -> QtWidgets.QPushButton:
-        btn = QtWidgets.QPushButton(label)
-        btn.setCheckable(True)
-        btn.setFixedWidth(60)
-        btn.setStyleSheet(
-            _SIDE_BTN.format(
-                fg        = _FG,
-                bg        = "transparent",
-                border    = _DIM,
-                active_bg = active_colour,
-                active_fg = "#ffffff",
-            )
-        )
-        return btn

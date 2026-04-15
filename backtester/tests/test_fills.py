@@ -5,8 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from backtester.sim.fills import FillEngine
-from backtester.sim.orders import Order, snap_to_tick
+from backtester.sim.fills import FillEngine, flatten_position
+from backtester.sim.orders import Order, Trade, snap_to_tick
 from backtester.sim.pnl import compute_pnl_currency, compute_pnl_r
 
 
@@ -323,6 +323,41 @@ class TestPnlR:
 
 
 # ── close_all ─────────────────────────────────────────────────────────────────
+
+class TestFlattenPosition:
+    def test_flatten_closes_at_bar_close(self):
+        """Long trade exits at bar close; pnl, status, and flags are correct."""
+        bar = pd.Series(
+            {"open": 100.0, "high": 110.0, "low": 98.0, "close": 105.0},
+            name=pd.Timestamp("2024-01-05"),
+        )
+        trade = Trade(
+            entry_price=100.0, side="long", quantity=10,
+            stop_price=90.0, target_price=120.0,
+        )
+        result = flatten_position(trade, bar)
+        assert result.exit_price     == pytest.approx(105.0)
+        assert result.exit_reason    == "manual"
+        assert result.ambiguity_flag == 0
+        assert result.pnl_currency   == pytest.approx(50.0)   # (105 - 100) * 10
+        assert result.status         == "closed"
+
+    def test_flatten_short_position(self):
+        """Short trade exits at bar close; pnl is positive when price fell."""
+        bar = pd.Series(
+            {"open": 100.0, "high": 102.0, "low": 96.0, "close": 98.0},
+            name=pd.Timestamp("2024-01-05"),
+        )
+        trade = Trade(
+            entry_price=100.0, side="short", quantity=10,
+            stop_price=110.0, target_price=85.0,
+        )
+        result = flatten_position(trade, bar)
+        assert result.exit_price   == pytest.approx(98.0)
+        assert result.pnl_currency == pytest.approx(20.0)   # (100 - 98) * 10
+        assert result.exit_reason  == "manual"
+        assert result.status       == "closed"
+
 
 class TestCloseAll:
     def test_closes_all_positions_at_close(self):

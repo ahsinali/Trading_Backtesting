@@ -334,6 +334,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._order_panel.order_placed.connect(self._on_order_placed)
         self._order_panel.policy_changed.connect(self._on_policy_changed)
+        self._order_panel.flatten_requested.connect(self._on_flatten_requested)
 
         # Chart + order panel share vertical space via a splitter so the
         # trade log is always visible and resizable.
@@ -491,6 +492,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._process_fills()
         self.refresh_status()
         self._update_order_panel_price_defaults()
+        self._update_button_states()
 
         # Enable review mode as soon as there is at least one bar to step back to
         if self._cursor is not None and self._cursor.current_index > 0:
@@ -556,6 +558,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if new_trades and self._summary_act is not None:
             self._summary_act.setEnabled(True)
 
+        self._update_button_states()
+
     def _update_order_panel_price_defaults(self) -> None:
         """Pass current close and ATR14 to the order panel price inputs."""
         if self._order_panel is None or self._chart is None:
@@ -580,6 +584,46 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._pending_orders,
                 self._fill_engine.open_positions if self._fill_engine else [],
             )
+        self._update_button_states()
+
+    def _on_flatten_requested(self) -> None:
+        """Immediately close all open positions at the current bar's close price."""
+        if self._fill_engine is None or self._cursor is None:
+            return
+        bar    = self._cursor.visible_bars.iloc[-1]
+        trades = self._fill_engine.close_all(bar)   # clears _open_positions
+
+        for trade in trades:
+            if self._trade_store is not None:
+                self._trade_store.insert_trade(trade)   # sets trade.db_id
+            if self._chart is not None:
+                self._chart.add_trade_marker(trade)
+
+        # Remove stop/target bracket lines from chart
+        if self._chart is not None:
+            self._chart.refresh_order_lines(self._pending_orders, [])
+
+        if self._order_panel is not None:
+            self._order_panel.refresh_trade_log()
+
+        self._update_button_states()
+
+        if trades and self._summary_act is not None:
+            self._summary_act.setEnabled(True)
+
+        close_price = float(bar["close"])
+        self.statusBar().showMessage(f"Position flattened at {close_price:.2f}")
+
+    def _update_button_states(self) -> None:
+        """Sync the OrderPanel action buttons with the current sim state."""
+        if self._order_panel is None:
+            return
+        has_pending    = len(self._pending_orders) > 0
+        has_open_trade = (
+            self._fill_engine is not None
+            and len(self._fill_engine.open_positions) > 0
+        )
+        self._order_panel.update_button_states(has_pending, has_open_trade)
 
     def _show_summary(self) -> None:
         """Open the session summary dialog."""

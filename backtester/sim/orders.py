@@ -180,27 +180,36 @@ class Trade:
 
     Field names match the ``trades`` table schema in CLAUDE.md exactly.
     ``db_id`` is ``None`` until the row is written to SQLite.
+
+    The three fields without defaults (``entry_price``, ``side``,
+    ``quantity``) are listed first so that partial construction is
+    valid in tests.  All existing call sites use keyword arguments and
+    are unaffected by the reordering.
     """
 
-    session_id:       str
-    symbol:           str
-    timeframe:        str
-    entry_datetime:   str
+    # Required — no defaults
     entry_price:      float
-    exit_datetime:    str
-    exit_price:       float
-    quantity:         float
     side:             str            # 'long' | 'short'
-    stop_price:       float | None
-    target_price:     float | None
-    exit_reason:      str            # 'stop'|'target'|'manual'|'timeout'
-    pnl_currency:     float
-    pnl_r:            float | None   # None when no stop defined
-    commission:       float
-    slippage:         float
-    tick_size:        float
-    execution_rule:   str            # 'default'|'conservative'|'optimistic'|'unknown'
-    ambiguity_flag:   int            # 0 or 1
-    notes:            str | None
-    config_hash:      str
-    db_id:            int | None = field(default=None, compare=False)
+    quantity:         float
+
+    # Optional — sensible defaults allow partial construction in tests
+    session_id:       str            = ""
+    symbol:           str            = ""
+    timeframe:        str            = ""
+    entry_datetime:   str            = ""
+    exit_datetime:    str            = ""
+    exit_price:       float          = 0.0
+    stop_price:       float | None   = None
+    target_price:     float | None   = None
+    exit_reason:      str            = ""   # 'stop'|'target'|'manual'|'timeout'
+    pnl_currency:     float          = 0.0
+    pnl_r:            float | None   = None  # None when no stop defined
+    commission:       float          = 0.0
+    slippage:         float          = 0.0
+    tick_size:        float          = 0.01
+    execution_rule:   str            = "default"  # 'default'|'conservative'|'optimistic'|'unknown'
+    ambiguity_flag:   int            = 0     # 0 or 1
+    notes:            str | None     = None
+    config_hash:      str            = ""
+    db_id:            int | None     = field(default=None, compare=False)
+    status:           str            = "open"   # 'open' | 'closed'
