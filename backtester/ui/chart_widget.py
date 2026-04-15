@@ -9,16 +9,25 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from backtester.engine.anonymization import Anonymizer
 from backtester.engine.cursor import BarCursor
-from backtester.engine.indicators import atr as compute_atr, bollinger_bands, rsi, sma
+from backtester.engine.indicators import (
+    IndicatorConfig,
+    atr as compute_atr,
+    compute_indicators,
+    rsi,
+    sma,
+)
 from backtester.engine.masking import mask_series
 
 # ── colour palette ───────────────────────────────────────────────────────────
 _GREEN         = QtGui.QColor("#26a69a")   # bull green
 _RED           = QtGui.QColor("#ef5350")   # bear red
 _BG            = "#131722"                 # chart background
-_BB_HEX        = "#4fc3f7"                 # Bollinger Band line colour
-_BB_FILL_RGBA  = (79, 195, 247, 12)        # BB fill  (very transparent)
 _PRICE_LINE    = "#787b86"                 # current-price line colour
+_SMA1_HEX      = "#60a5fa"                 # SMA1 — blue
+_SMA2_HEX      = "#fbbf24"                 # SMA2 — amber/yellow
+_KC_HEX        = "#60a5fa"                 # Keltner band lines — blue
+_KC_MID_HEX    = "#93c5fd"                 # Keltner middle line — light blue
+_KC_FILL_RGBA  = (96, 165, 250, 20)        # Keltner fill (very transparent)
 
 
 # ── DateAxisItem ─────────────────────────────────────────────────────────────
@@ -186,12 +195,7 @@ class ChartWidget(pg.GraphicsLayoutWidget):
     """
 
     # Indicator name → line colour (only for lines shown on the chart)
-    _INDICATOR_COLOURS: dict[str, str] = {
-        "BB_upper":  _BB_HEX,
-        "BB_middle": _BB_HEX,
-        "BB_lower":  _BB_HEX,
-        "SMA20":     "#ffeb3b",
-    }
+    _INDICATOR_COLOURS: dict[str, str] = {}
 
     def __init__(
         self,
@@ -202,20 +206,21 @@ class ChartWidget(pg.GraphicsLayoutWidget):
         self.setBackground(_BG)
         self._cursor = cursor
 
-        # ── Precompute indicators ─────────────────────────────────────
+        # ── Precompute always-on indicators ──────────────────────────
         close = cursor.bars["close"]
         high  = cursor.bars["high"]
         low   = cursor.bars["low"]
-        bb_u, bb_m, bb_l = bollinger_bands(close, 20, 2.0)
         self._indicator_series: dict[str, pd.Series] = {
-            "BB_upper":  bb_u,
-            "BB_middle": bb_m,
-            "BB_lower":  bb_l,
-            "SMA20":     sma(close, 20),
-            "RSI14":     rsi(close, 14),
-            "ATR14":     compute_atr(high, low, close, 14),
+            "RSI14": rsi(close, 14),
+            "ATR14": compute_atr(high, low, close, 14),
         }
         self._indicators_visible = True
+
+        # ── Configurable overlay (SMA or Keltner) ────────────────────
+        self._overlay_config: IndicatorConfig = IndicatorConfig(mode="keltner")
+        self._overlay_data: dict[str, pd.Series] = compute_indicators(
+            cursor.bars, self._overlay_config
+        )
         self._x_labels_visible   = True
         self._y_labels_visible   = True
         self._auto_scroll        = False   # enabled after initial fit_to_visible()
@@ -250,29 +255,37 @@ class ChartWidget(pg.GraphicsLayoutWidget):
         self._candle_item = CandlestickItem()
         self._plot.addItem(self._candle_item)
 
-        # ── Bollinger Band lines ──────────────────────────────────────
-        bb_pen    = pg.mkPen(_BB_HEX, width=1)
-        bb_mid_pen = pg.mkPen(_BB_HEX, width=1,
-                               style=QtCore.Qt.PenStyle.DashLine)
-        self._bb_upper_item  = self._plot.plot([], [], pen=bb_pen,     antialias=False)
-        self._bb_lower_item  = self._plot.plot([], [], pen=bb_pen,     antialias=False)
-        self._bb_middle_item = self._plot.plot([], [], pen=bb_mid_pen, antialias=False)
-
-        # Fill between upper and lower bands
-        fill_brush = QtGui.QBrush(QtGui.QColor(*_BB_FILL_RGBA))
-        self._bb_fill = pg.FillBetweenItem(
-            self._bb_upper_item,
-            self._bb_lower_item,
-            brush=fill_brush,
-        )
-        self._plot.addItem(self._bb_fill)
-
-        # ── SMA20 line ────────────────────────────────────────────────
-        self._sma_item = self._plot.plot(
+        # ── SMA overlay lines (shown in SMA mode) ────────────────────
+        self._sma1_item = self._plot.plot(
             [], [],
-            pen=pg.mkPen("#ffeb3b", width=1),
+            pen=pg.mkPen(_SMA1_HEX, width=1.5),
             antialias=False,
         )
+        self._sma2_item = self._plot.plot(
+            [], [],
+            pen=pg.mkPen(_SMA2_HEX, width=1.5),
+            antialias=False,
+        )
+
+        # ── Keltner Channel lines (shown in Keltner mode) ─────────────
+        kc_solid_pen = pg.mkPen(_KC_HEX, width=1.2)
+        kc_dash_pen  = pg.mkPen(
+            _KC_MID_HEX, width=1.0,
+            style=QtCore.Qt.PenStyle.CustomDashLine,
+        )
+        kc_dash_pen.setDashPattern([6, 3])
+
+        self._kc_upper_item  = self._plot.plot([], [], pen=kc_solid_pen, antialias=False)
+        self._kc_lower_item  = self._plot.plot([], [], pen=kc_solid_pen, antialias=False)
+        self._kc_middle_item = self._plot.plot([], [], pen=kc_dash_pen,  antialias=False)
+
+        kc_fill_brush = QtGui.QBrush(QtGui.QColor(*_KC_FILL_RGBA))
+        self._kc_fill = pg.FillBetweenItem(
+            self._kc_upper_item,
+            self._kc_lower_item,
+            brush=kc_fill_brush,
+        )
+        self._plot.addItem(self._kc_fill)
 
         # ── Current-price horizontal line ────────────────────────────
         self._price_line = pg.InfiniteLine(
@@ -351,34 +364,51 @@ class ChartWidget(pg.GraphicsLayoutWidget):
 
         self._candle_item.set_data(x, opens, highs, lows, closes)
 
-        # BB bands
-        for name, item in [
-            ("BB_upper",  self._bb_upper_item),
-            ("BB_middle", self._bb_middle_item),
-            ("BB_lower",  self._bb_lower_item),
-        ]:
-            if self._indicators_visible:
-                masked = mask_series(self._indicator_series[name], idx).to_numpy(dtype=np.float64)
-                if anon:
-                    masked = self._anonymizer.transform_prices_array(masked)
-                valid  = ~np.isnan(masked)
-                item.setData(x[valid], masked[valid])
-                item.setVisible(True)
-            else:
-                item.setVisible(False)
-
-        self._bb_fill.setVisible(self._indicators_visible)
-
-        # SMA20
-        if self._indicators_visible:
-            masked = mask_series(self._indicator_series["SMA20"], idx).to_numpy(dtype=np.float64)
-            if anon:
-                masked = self._anonymizer.transform_prices_array(masked)
-            valid  = ~np.isnan(masked)
-            self._sma_item.setData(x[valid], masked[valid])
-            self._sma_item.setVisible(True)
+        # Configurable overlay (SMA or Keltner)
+        if self._indicators_visible and self._overlay_data:
+            if self._overlay_config.mode == "sma":
+                self._kc_upper_item.setVisible(False)
+                self._kc_lower_item.setVisible(False)
+                self._kc_middle_item.setVisible(False)
+                self._kc_fill.setVisible(False)
+                for series, item in [
+                    (self._overlay_data.get("sma1"), self._sma1_item),
+                    (self._overlay_data.get("sma2"), self._sma2_item),
+                ]:
+                    if series is not None:
+                        m = mask_series(series, idx).to_numpy(dtype=np.float64)
+                        if anon:
+                            m = self._anonymizer.transform_prices_array(m)
+                        v = ~np.isnan(m)
+                        item.setData(x[v], m[v])
+                        item.setVisible(True)
+                    else:
+                        item.setVisible(False)
+            else:  # keltner
+                self._sma1_item.setVisible(False)
+                self._sma2_item.setVisible(False)
+                for series, item in [
+                    (self._overlay_data.get("kc_upper"),  self._kc_upper_item),
+                    (self._overlay_data.get("kc_lower"),  self._kc_lower_item),
+                    (self._overlay_data.get("kc_middle"), self._kc_middle_item),
+                ]:
+                    if series is not None:
+                        m = mask_series(series, idx).to_numpy(dtype=np.float64)
+                        if anon:
+                            m = self._anonymizer.transform_prices_array(m)
+                        v = ~np.isnan(m)
+                        item.setData(x[v], m[v])
+                        item.setVisible(True)
+                    else:
+                        item.setVisible(False)
+                self._kc_fill.setVisible(True)
         else:
-            self._sma_item.setVisible(False)
+            for item in (
+                self._sma1_item, self._sma2_item,
+                self._kc_upper_item, self._kc_lower_item, self._kc_middle_item,
+            ):
+                item.setVisible(False)
+            self._kc_fill.setVisible(False)
 
         # Current-price line (in display space)
         self._price_line.setValue(float(closes[-1]))
@@ -396,6 +426,25 @@ class ChartWidget(pg.GraphicsLayoutWidget):
         if self._auto_scroll:
             self._maybe_scroll_to_latest()
 
+    def set_indicator_data(
+        self,
+        data: dict[str, pd.Series],
+        config: IndicatorConfig,
+    ) -> None:
+        """Store new overlay indicator data and configuration.
+
+        Call :meth:`render_visible` immediately after to repaint the chart.
+
+        Parameters
+        ----------
+        data:
+            Dict returned by :func:`~backtester.engine.indicators.compute_indicators`.
+        config:
+            The :class:`~backtester.engine.indicators.IndicatorConfig` that produced *data*.
+        """
+        self._overlay_data   = data
+        self._overlay_config = config
+
     def current_bar_summary(self) -> dict:
         """Return OHLC + indicator snapshot for the MainWindow info bar."""
         idx  = self._cursor.current_index
@@ -405,10 +454,14 @@ class ChartWidget(pg.GraphicsLayoutWidget):
             name: float(s.iloc[idx])
             for name, s in self._indicator_series.items()
         }
+        # Add current overlay values
+        for name, series in self._overlay_data.items():
+            vals[name] = float(series.iloc[idx])
         return {
-            "bar":        bar,
-            "prev_close": float(prev["close"]),
-            "indicators": vals,
+            "bar":            bar,
+            "prev_close":     float(prev["close"]),
+            "indicators":     vals,
+            "overlay_config": self._overlay_config,
         }
 
     def _to_display_price(self, price: float) -> float:

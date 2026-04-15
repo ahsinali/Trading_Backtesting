@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+venv/
+.env
+*.db
+*.sqlite
+*.json
+!requirements.txt
+dist/
+build/
+*.spec
+*.egg-info/
+.DS_Store
+Thumbs.db

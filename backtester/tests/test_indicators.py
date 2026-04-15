@@ -6,7 +6,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtester.engine.indicators import atr, ema, macd, rsi, sma
+from backtester.engine.indicators import (
+    IndicatorConfig,
+    atr,
+    bollinger_bands,
+    compute_indicators,
+    ema,
+    keltner_channel,
+    macd,
+    rsi,
+    sma,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -144,3 +154,71 @@ def test_macd_histogram_is_difference(close_50):
     valid = ~macd_line.isna() & ~signal_line.isna()
     diff = (macd_line[valid] - signal_line[valid] - hist[valid]).abs()
     assert (diff < 1e-10).all()
+
+
+# ---------------------------------------------------------------------------
+# Keltner Channel tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def golden_bars(ohlc_50) -> pd.DataFrame:
+    """ohlc_50 with a DatetimeIndex so it resembles real OHLCV data."""
+    df = ohlc_50.copy()
+    df.index = pd.date_range("2020-01-01", periods=len(df), freq="1h")
+    return df
+
+
+def test_keltner_channel_shape(golden_bars):
+    """keltner_channel() returns three series each with the same length as input."""
+    upper, middle, lower = keltner_channel(
+        golden_bars["high"], golden_bars["low"], golden_bars["close"]
+    )
+    assert len(upper) == len(golden_bars)
+    assert len(middle) == len(golden_bars)
+    assert len(lower) == len(golden_bars)
+
+
+def test_keltner_upper_above_lower(golden_bars):
+    """Upper band must always be >= lower band (where both are non-NaN)."""
+    upper, middle, lower = keltner_channel(
+        golden_bars["high"], golden_bars["low"], golden_bars["close"]
+    )
+    valid = ~upper.isna() & ~lower.isna()
+    assert (upper[valid] >= lower[valid]).all()
+
+
+def test_keltner_middle_between_bands(golden_bars):
+    """Middle band must lie between upper and lower (where all are non-NaN)."""
+    upper, middle, lower = keltner_channel(
+        golden_bars["high"], golden_bars["low"], golden_bars["close"]
+    )
+    valid = ~upper.isna() & ~middle.isna() & ~lower.isna()
+    assert (middle[valid] <= upper[valid]).all()
+    assert (middle[valid] >= lower[valid]).all()
+
+
+def test_compute_indicators_sma_mode(golden_bars):
+    """compute_indicators in SMA mode returns sma1 and sma2 of correct length."""
+    cfg  = IndicatorConfig(mode="sma", sma_period=10, sma_period_2=20)
+    data = compute_indicators(golden_bars, cfg)
+    assert set(data.keys()) == {"sma1", "sma2"}
+    assert len(data["sma1"]) == len(golden_bars)
+    assert len(data["sma2"]) == len(golden_bars)
+    # sma1 should have 9 leading NaNs, sma2 should have 19
+    assert data["sma1"].isna().sum() == 9
+    assert data["sma2"].isna().sum() == 19
+
+
+def test_compute_indicators_keltner_mode(golden_bars):
+    """compute_indicators in Keltner mode returns kc_upper/middle/lower of correct length."""
+    cfg  = IndicatorConfig(mode="keltner", keltner_ema_period=10, keltner_atr_period=5)
+    data = compute_indicators(golden_bars, cfg)
+    assert set(data.keys()) == {"kc_upper", "kc_middle", "kc_lower"}
+    for key in ("kc_upper", "kc_middle", "kc_lower"):
+        assert len(data[key]) == len(golden_bars)
+    # All three should have the same NaN mask
+    nan_mask_upper  = data["kc_upper"].isna()
+    nan_mask_middle = data["kc_middle"].isna()
+    nan_mask_lower  = data["kc_lower"].isna()
+    assert (nan_mask_upper == nan_mask_middle).all()
+    assert (nan_mask_upper == nan_mask_lower).all()

@@ -10,6 +10,7 @@ import pandas as pd
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from backtester.engine.cursor import BarCursor
+from backtester.engine.indicators import IndicatorConfig, compute_indicators
 from backtester.io.loader import load_csv
 from backtester.sim.fills import FillEngine
 from backtester.sim.orders import Order, Trade
@@ -110,6 +111,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # True while in review mode — prevents Space from advancing bars
         self._advance_paused: bool = False
 
+        # Indicator overlay config (persists across CSV loads)
+        self._indicator_config: IndicatorConfig = IndicatorConfig(mode="keltner")
+        self._overlay_data: dict = {}
+
         # Placeholders filled by _open_csv
         self._lbl_symbol:    QtWidgets.QLabel | None = None
         self._lbl_tf:        QtWidgets.QLabel | None = None
@@ -124,6 +129,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._review_banner: QtWidgets.QLabel | None = None
         self._review_act:    QtWidgets.QAction | None = None
         self._summary_act:   QtWidgets.QAction | None = None
+        self._lbl_ind:       QtWidgets.QLabel | None = None
 
         self._build_menu()
 
@@ -228,12 +234,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self._lbl_delta.setStyleSheet(_LABEL_CSS)
         row.addWidget(self._lbl_delta)
 
+        row.addWidget(_sep(bar))
+
+        # Indicator HUD (shows current overlay values)
+        self._lbl_ind = QtWidgets.QLabel("—")
+        self._lbl_ind.setStyleSheet(
+            f"color: {_BAR_DIM}; font-size: 11px; background: transparent;"
+        )
+        row.addWidget(self._lbl_ind)
+
         row.addStretch()
 
-        # Indicator toggle button
-        self._btn_ind = QtWidgets.QPushButton("Indicators  (I)")
+        # Indicators button — opens configuration dialog
+        self._btn_ind = QtWidgets.QPushButton("Indicators ▾")
         self._btn_ind.setStyleSheet(_BTN_CSS)
-        self._btn_ind.clicked.connect(self._toggle_indicators)
+        self._btn_ind.clicked.connect(self._open_indicators_dialog)
         row.addWidget(self._btn_ind)
 
         # Fit button
@@ -364,6 +379,14 @@ class MainWindow(QtWidgets.QMainWindow):
         manifest_path = str(_PROJECT_DIR / f"{self._session_id}.manifest.json")
         self._manifest.save(manifest_path)
 
+        # Compute initial overlay, push it to the chart, and re-render so that
+        # the correct mode (SMA or Keltner) is visible from the first frame.
+        # ChartWidget.__init__ always starts in SMA mode; calling render_visible()
+        # here ensures any persisted Keltner config is applied immediately.
+        self._overlay_data = compute_indicators(self._cursor.bars, self._indicator_config)
+        self._chart.set_indicator_data(self._overlay_data, self._indicator_config)
+        self._chart.render_visible()
+
         install_hotkeys(self, self._cursor, self._chart)
         self.after_bar_advance()
 
@@ -374,6 +397,23 @@ class MainWindow(QtWidgets.QMainWindow):
     def _toggle_indicators(self) -> None:
         if self._chart:
             self._chart.toggle_indicators()
+
+    def _open_indicators_dialog(self) -> None:
+        """Open the Indicators configuration dialog."""
+        from backtester.ui.indicators_dialog import IndicatorsDialog
+        dlg = IndicatorsDialog(current_config=self._indicator_config, parent=self)
+        dlg.config_changed.connect(self._on_indicator_config_changed)
+        dlg.exec()
+
+    def _on_indicator_config_changed(self, config: IndicatorConfig) -> None:
+        """Apply a new indicator configuration from the dialog."""
+        self._indicator_config = config
+        if self._cursor is not None:
+            self._overlay_data = compute_indicators(self._cursor.bars, config)
+        if self._chart is not None:
+            self._chart.set_indicator_data(self._overlay_data, config)
+            self._chart.render_visible()
+        self.refresh_status()
 
     def _fit_chart(self) -> None:
         if self._chart:
@@ -595,6 +635,34 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"color: {colour}; font-size: 12px; background: transparent;"
             )
             self._lbl_delta.setText(f"{sign}{delta:.2f}  ({sign}{pct:.2f}%)")
+
+        # Indicator HUD label
+        if self._lbl_ind is not None and self._overlay_data:
+            idx = self._cursor.current_index
+            cfg = self._indicator_config
+            import math
+            def _fmt(v: float) -> str:
+                return "—" if math.isnan(v) else f"{v:.2f}"
+
+            if cfg.mode == "sma":
+                s1 = self._overlay_data.get("sma1")
+                s2 = self._overlay_data.get("sma2")
+                v1 = float(s1.iloc[idx]) if s1 is not None else float("nan")
+                v2 = float(s2.iloc[idx]) if s2 is not None else float("nan")
+                self._lbl_ind.setText(
+                    f"SMA{cfg.sma_period}: {_fmt(v1)}  "
+                    f"SMA{cfg.sma_period_2}: {_fmt(v2)}"
+                )
+            else:  # keltner
+                su = self._overlay_data.get("kc_upper")
+                sm = self._overlay_data.get("kc_middle")
+                sl = self._overlay_data.get("kc_lower")
+                vu = float(su.iloc[idx]) if su is not None else float("nan")
+                vm = float(sm.iloc[idx]) if sm is not None else float("nan")
+                vl = float(sl.iloc[idx]) if sl is not None else float("nan")
+                self._lbl_ind.setText(
+                    f"KC  U: {_fmt(vu)}  M: {_fmt(vm)}  L: {_fmt(vl)}"
+                )
 
         # Bottom status bar
         idx   = self._cursor.current_index

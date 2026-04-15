@@ -8,6 +8,9 @@ Rules:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Literal
+
 import numpy as np
 import pandas as pd
 
@@ -161,6 +164,106 @@ def atr(
         result.iloc[i] = avg
 
     return result
+
+
+def keltner_channel(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    ema_period: int = 20,
+    atr_period: int = 14,
+    atr_multiplier: float = 2.0,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Keltner Channel (upper, middle, lower).
+
+    Parameters
+    ----------
+    high, low, close:
+        Full OHLC series, all sharing the same index.
+    ema_period:
+        EMA look-back for the middle band (default 20).
+    atr_period:
+        ATR look-back for band width (default 14, Wilder smoothing).
+    atr_multiplier:
+        Number of ATRs for band offset (default 2.0).
+
+    Returns
+    -------
+    tuple[pd.Series, pd.Series, pd.Series]
+        ``(upper, middle, lower)`` — all same length as inputs.
+        NaN where either EMA or ATR is not yet defined (warm-up period).
+    """
+    middle   = ema(close, ema_period)
+    atr_vals = atr(high, low, close, atr_period)
+    upper    = middle + atr_multiplier * atr_vals
+    lower    = middle - atr_multiplier * atr_vals
+    return upper, middle, lower
+
+
+# ── Indicator configuration ───────────────────────────────────────────────────
+
+@dataclass
+class IndicatorConfig:
+    """Active overlay indicator configuration.
+
+    Parameters
+    ----------
+    mode:
+        ``'sma'`` for two SMA lines; ``'keltner'`` for Keltner Channel.
+    sma_period:
+        Period for the first SMA line (default 20).
+    sma_period_2:
+        Period for the second SMA line (default 50).
+    keltner_ema_period:
+        EMA period for the Keltner middle band (default 20).
+    keltner_atr_period:
+        ATR period for Keltner band width (default 14).
+    keltner_atr_multiplier:
+        ATR multiplier for band offset (default 2.0).
+    """
+
+    mode:                   Literal["sma", "keltner"] = "sma"
+    sma_period:             int   = 20
+    sma_period_2:           int   = 50
+    keltner_ema_period:     int   = 20
+    keltner_atr_period:     int   = 14
+    keltner_atr_multiplier: float = 2.0
+
+
+def compute_indicators(bars: pd.DataFrame, config: IndicatorConfig) -> dict:
+    """Precompute overlay indicator series for the full bar dataset.
+
+    Parameters
+    ----------
+    bars:
+        Full OHLCV DataFrame (never sliced).
+    config:
+        Active indicator configuration.
+
+    Returns
+    -------
+    dict
+        ``{"sma1": ..., "sma2": ...}`` in SMA mode, or
+        ``{"kc_upper": ..., "kc_middle": ..., "kc_lower": ...}`` in Keltner mode.
+        All series are the same length as *bars*.
+    """
+    if config.mode == "sma":
+        return {
+            "sma1": sma(bars["close"], config.sma_period),
+            "sma2": sma(bars["close"], config.sma_period_2),
+        }
+    # keltner
+    upper, middle, lower = keltner_channel(
+        bars["high"], bars["low"], bars["close"],
+        config.keltner_ema_period,
+        config.keltner_atr_period,
+        config.keltner_atr_multiplier,
+    )
+    return {
+        "kc_upper":  upper,
+        "kc_middle": middle,
+        "kc_lower":  lower,
+    }
 
 
 def macd(
